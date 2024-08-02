@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
+use anchor_spl::metadata::MetadataAccount;
 use anchor_spl::{
     associated_token::AssociatedToken,
     token_interface::{mint_to, Mint, MintTo, TokenAccount, TokenInterface}
@@ -9,24 +10,26 @@ use anchor_spl::metadata::{
     Metadata,
     CreateMetadataAccountsV3,
     CreateMasterEditionV3,
-    MintNewEditionFromMasterEditionViaToken,
     SignMetadata,
+    SetAndVerifySizedCollectionItem,
     create_master_edition_v3,
     create_metadata_accounts_v3,
     sign_metadata,
-    mint_new_edition_from_master_edition_via_token,
-    mpl_token_metadata::types::{
+    set_and_verify_sized_collection_item,
+    mpl_token_metadata::{
+        types::{
             CollectionDetails,
             Creator, 
             DataV2,
         },
+    },
 };
 
 
 declare_id!("2RTh2Y4e2N421EbSnUYTKdGqDHJH7etxZb3VrWDMpNMY");
 
 #[constant]
-pub const NAME: &str = "Token Lottery Ticket";
+pub const NAME: &str = "Token Lottery Ticket #";
 #[constant]
 pub const URI: &str = "Token Lottery";
 #[constant]
@@ -35,7 +38,6 @@ pub const SYMBOL: &str = "TICKET";
 
 #[program]
 pub mod token_lottery {
-
     use super::*;
 
     pub fn initialize_config(ctx: Context<InitializeConifg>, start: u64, end: u64, price: u64) -> Result<()> {
@@ -105,7 +107,7 @@ pub mod token_lottery {
             Some(CollectionDetails::V1 { size: 0 }), // set as collection nft
         )?;
 
-        msg!("Creating Master edition account");
+        msg!("Creating Master edition accounts");
         create_master_edition_v3(
             CpiContext::new_with_signer(
                 ctx.accounts.token_metadata_program.to_account_info(),
@@ -122,7 +124,7 @@ pub mod token_lottery {
                 },
                 &signer_seeds,
             ),
-            Some(u32::MAX.into()),
+            Some(0),
         )?;
 
         msg!("verifying collection");
@@ -142,6 +144,9 @@ pub mod token_lottery {
     pub fn buy_ticket(ctx: Context<BuyTicket>) -> Result<()> {
         let clock = Clock::get()?;
 
+        ctx.accounts.token_lottery.ticket_num += 1;
+        let ticket_name = NAME.to_owned() + ctx.accounts.token_lottery.ticket_num.to_string().as_str();
+
         if clock.slot < ctx.accounts.token_lottery.lottery_start || 
                 clock.slot > ctx.accounts.token_lottery.lottery_end {
             return Err(ErrorCode::LotteryNotOpen.into());
@@ -158,40 +163,15 @@ pub mod token_lottery {
             ctx.accounts.token_lottery.price,
         )?;
 
+        ctx.accounts.token_lottery.lottery_pot_amount += ctx.accounts.token_lottery.price;
+
         let signer_seeds: &[&[&[u8]]] = &[&[
             b"collection_mint".as_ref(),
             &[ctx.bumps.collection_mint],
         ]];
 
-        mint_new_edition_from_master_edition_via_token(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_metadata_program.to_account_info(), 
-                MintNewEditionFromMasterEditionViaToken {
-                    new_metadata: ctx.accounts.metadata.to_account_info(),
-                    new_edition: ctx.accounts.master_edition.to_account_info(),
-                    master_edition: ctx.accounts.collection_master_edition.to_account_info(),
-                    metadata: ctx.accounts.collection_metadata.to_account_info(),
-                    metadata_mint: ctx.accounts.collection_mint.to_account_info(),
-                    token_account: ctx.accounts.destination.to_account_info(),
-                    token_account_owner: ctx.accounts.payer.to_account_info(),
-                    new_mint: ctx.accounts.ticket_mint.to_account_info(),
-                    edition_mark_pda: ctx.accounts.edition_mark_pda.to_account_info(),
-                    new_mint_authority: ctx.accounts.collection_mint.to_account_info(),
-                    new_metadata_update_authority: ctx.accounts.collection_mint.to_account_info(),
-                    token_program: ctx.accounts.token_program.to_account_info(),
-                    payer: ctx.accounts.payer.to_account_info(),
-                    system_program: ctx.accounts.system_program.to_account_info(),
-                    rent: ctx.accounts.rent.to_account_info(),
-                }, 
-                &signer_seeds
-            ), 
-            ctx.accounts.token_lottery.ticket_num.into()
-        )?;
-
-        ctx.accounts.token_lottery.ticket_num += 1;
-
         // Mint Ticket
-        /*mint_to(
+        mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
@@ -219,7 +199,7 @@ pub mod token_lottery {
                 &signer_seeds,
             ),
             DataV2 {
-                name: NAME.to_string(),
+                name: ticket_name,
                 symbol: SYMBOL.to_string(),
                 uri: URI.to_string(),
                 seller_fee_basis_points: 0,
@@ -270,7 +250,7 @@ pub mod token_lottery {
                 &signer_seeds,
             ),
             None,
-        )?;*/
+        )?;
 
         Ok(())
     }
@@ -318,7 +298,7 @@ pub mod token_lottery {
         msg!("Ticket num: {}", token_lottery.ticket_num);
 
         let randomness_result = 
-            revealed_random_value[0] as u32 % token_lottery.ticket_num;
+            (revealed_random_value[0] as u32 % token_lottery.ticket_num) + 1;
 
         msg!("Winner: {}", randomness_result);
 
@@ -327,14 +307,36 @@ pub mod token_lottery {
         Ok(())
     }
 
-    pub fn claim_prize(_ctx: Context<ClaimPrize>) -> Result<()> {
+    pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
+        
+        // Check if token is a part of the collection
+        require!(ctx.accounts.metadata.collection.as_ref().unwrap().verified, ErrorCode::NotAuthorized);
+        require!(ctx.accounts.metadata.collection.as_ref().unwrap().key == ctx.accounts.collection_mint.key(), ErrorCode::NotAuthorized);
+
+        let ticket_name = NAME.to_owned() + ctx.accounts.token_lottery.winner.to_string().as_str();
+
+        // Check if the winner has the winning ticket
+        require!(ctx.accounts.metadata.name == ticket_name, ErrorCode::NotAuthorized);
+
+        // Transfer the prize to the winner
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.token_lottery.to_account_info(),
+                    to: ctx.accounts.payer.to_account_info(),
+                },
+            ),
+            ctx.accounts.token_lottery.lottery_pot_amount,
+        )?;
+
+        ctx.accounts.token_lottery.lottery_pot_amount = 0;
 
         Ok(())
     }
 }
 
 #[derive(Accounts)]
-#[instruction(ticket_num: u32)]
 pub struct ClaimPrize<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -347,10 +349,20 @@ pub struct ClaimPrize<'info> {
     pub token_lottery: Account<'info, TokenLottery>,
 
     #[account(
-        seeds = [ticket_num.to_le_bytes().as_ref()],
+        mut,
+        seeds = [b"collection_mint".as_ref()],
         bump,
     )]
+    pub collection_mint: InterfaceAccount<'info, Mint>,
+
     pub ticket_mint: InterfaceAccount<'info, Mint>,
+
+    #[account(
+        seeds = [b"metadata", token_metadata_program.key().as_ref(), ticket_mint.key().as_ref()],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub metadata: Account<'info, MetadataAccount>,
 
     #[account(
         associated_token::mint = ticket_mint,
@@ -359,9 +371,17 @@ pub struct ClaimPrize<'info> {
     )]
     pub destination: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_metadata_program: Program<'info, Metadata>,
+    #[account(
+        mut,
+        seeds = [b"metadata", token_metadata_program.key().as_ref(), collection_mint.key().as_ref()],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub collection_metadata: Account<'info, MetadataAccount>,
+
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
+    pub token_metadata_program: Program<'info, Metadata>,
 }
 
 #[derive(Accounts)]
@@ -410,16 +430,7 @@ pub struct BuyTicket<'info> {
         seeds = [b"token_lottery".as_ref()],
         bump
     )]
-    pub token_lottery: Box<Account<'info, TokenLottery>>,
-
-    #[account(
-        init,
-        payer = payer,
-        space = 8 + LotteryTicket::INIT_SPACE,
-        seeds = [ticket_mint.key().as_ref()],
-        bump,
-    )]
-    pub lottery_ticket: Box<Account<'info, LotteryTicket>>,
+    pub token_lottery: Account<'info, TokenLottery>,
 
     #[account(
         init,
@@ -427,9 +438,9 @@ pub struct BuyTicket<'info> {
         mint::decimals = 0,
         mint::authority = collection_mint,
         mint::freeze_authority = collection_mint,
-        mint::token_program = token_program,
+        mint::token_program = token_program
     )]
-    pub ticket_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub ticket_mint: InterfaceAccount<'info, Mint>,
 
     #[account(
         init,
@@ -438,25 +449,15 @@ pub struct BuyTicket<'info> {
         associated_token::authority = payer,
         associated_token::token_program = token_program,
     )]
-    pub destination: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub destination: InterfaceAccount<'info, TokenAccount>,
 
     #[account(mut)]
     /// CHECK: This account will be initialized by the metaplex program
     pub metadata: UncheckedAccount<'info>,
 
-    ///CHECK: this is not dangerous
-    #[account(mut)]
-    pub new_metadata: UncheckedAccount<'info>,
-
     #[account(mut)]
     /// CHECK: This account will be initialized by the metaplex program
     pub master_edition: UncheckedAccount<'info>,
-
-    #[account(
-        mut
-    )]
-    /// CHECK: This account will be initialized by the metaplex program
-    pub edition_mark_pda: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -482,13 +483,7 @@ pub struct BuyTicket<'info> {
         seeds = [b"collection_mint".as_ref()],
         bump,
     )]
-    pub collection_mint: Box<InterfaceAccount<'info, Mint>>,
-
-    /// CHECK: This account will be initialized by the metaplex program
-    #[account(
-        mut
-    )]
-    pub new_edition: UncheckedAccount<'info>,
+    pub collection_mint: InterfaceAccount<'info, Mint>,
 
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_program: Interface<'info, TokenInterface>,
@@ -554,13 +549,6 @@ pub struct InitializeLottery<'info> {
     pub system_program: Program<'info, System>,
     pub token_metadata_program: Program<'info, Metadata>,
     pub rent: Sysvar<'info, Rent>,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct LotteryTicket {
-    pub bump: u8,
-    pub ticket_num: u32,
 }
 
 #[account]

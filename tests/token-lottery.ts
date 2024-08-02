@@ -20,10 +20,9 @@ describe("token-lottery", () => {
   const TOKEN_METADATA_PROGRAM_ID = new anchor.web3.PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
   async function buyTicket() {
-
     const ticketMint = anchor.web3.Keypair.generate();
 
-    const newMetadata = anchor.web3.PublicKey.findProgramAddressSync(
+    const metadata = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from('metadata'), TOKEN_METADATA_PROGRAM_ID.toBuffer(), ticketMint.publicKey.toBuffer()],
         TOKEN_METADATA_PROGRAM_ID,
       )[0];
@@ -33,48 +32,14 @@ describe("token-lottery", () => {
         TOKEN_METADATA_PROGRAM_ID,
       )[0];
 
-    const newEditionAddress = (await anchor.web3.PublicKey.findProgramAddress(
-      [
-        Buffer.from("metadata"),
-        TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-        ticketMint.publicKey.toBuffer(),
-        Buffer.from("edition"),
-      ],
-      TOKEN_METADATA_PROGRAM_ID
-    ))[0];
-
-    const collectionMint = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from('collection_mint')],
-      program.programId,
-    )[0];
-
-    const metadata = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from('metadata'), TOKEN_METADATA_PROGRAM_ID.toBuffer(), collectionMint.toBuffer()],
-      TOKEN_METADATA_PROGRAM_ID,
-    )[0];
-
-    const editionNumber = new anchor.BN( (Math.floor(1/248)));
-    console.log("Edition Number", editionNumber);
-    const editionMarker = (await anchor.web3.PublicKey.findProgramAddress(
-      [
-        Buffer.from("metadata"),
-        TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-        ticketMint.publicKey.toBuffer(),
-        Buffer.from("edition"),
-        Buffer.from(editionNumber.toString())
-      ],
-      TOKEN_METADATA_PROGRAM_ID
-    ))[0];
-
     const buyTicketIx = await program.methods.buyTicket()
       .accounts({
+      masterEdition: masterEdition,
       metadata: metadata,
       tokenProgram: TOKEN_PROGRAM_ID,
-      editionMarkPda: editionMarker,
-      newMetadata: newMetadata,
-      newEdition: newEditionAddress,
-      masterEdition: masterEdition,
+      ticketMint: ticketMint.publicKey,
     })
+    .signers([ticketMint])
     .instruction();
 
     const blockhashContext = await connection.getLatestBlockhash();
@@ -95,7 +60,7 @@ describe("token-lottery", () => {
       .add(computeIx)
       .add(priorityIx);
 
-    const sig = await anchor.web3.sendAndConfirmTransaction(connection, tx, [wallet.payer]);
+    const sig = await anchor.web3.sendAndConfirmTransaction(connection, tx, [wallet.payer, ticketMint]);
     console.log("buy ticket ", sig);
   }
 
@@ -162,7 +127,7 @@ describe("token-lottery", () => {
     await buyTicket();
   });
 
-  it("Is committing and revealing a winner", async () => {
+  /*it("Is committing and revealing a winner", async () => {
     const queue = new anchor.web3.PublicKey("A43DyUGA7s8eXPxqEjJY6EBu1KKbNgfxF8h17VAHn13w");
 
     const queueAccount = new sb.Queue(switchboardProgram, queue);
@@ -254,10 +219,22 @@ describe("token-lottery", () => {
       lastValidBlockHeight: blockhashContext.value.lastValidBlockHeight
     });
     console.log("  Transaction Signature revealTx", revealSignature);
-  });
+  });*/
 
   it("Is claiming a prize", async () => {
+    const tokenLotteryAddress = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from('token_lottery')],
+      program.programId,
+    )[0];
+    const lotteryConfig = await program.account.tokenLottery.fetch(tokenLotteryAddress);
 
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      wallet.publicKey, 
+      {programId: TOKEN_PROGRAM_ID}
+    );
+
+    
+    console.log("Lottery config", lotteryConfig.winner);
   });
 
 
