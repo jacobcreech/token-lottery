@@ -346,7 +346,7 @@ pub struct ClaimPrize<'info> {
     #[account(
         mut,
         seeds = [b"token_lottery".as_ref()],
-        bump,
+        bump = token_lottery.bump,
     )]
     pub token_lottery: Account<'info, TokenLottery>,
 
@@ -398,7 +398,7 @@ pub struct CommitWinner<'info> {
     #[account(
         mut,
         seeds = [b"token_lottery".as_ref()],
-        bump,
+        bump = token_lottery.bump,
     )]
     pub token_lottery: Account<'info, TokenLottery>,
 
@@ -416,7 +416,7 @@ pub struct ChooseWinner<'info> {
     #[account(
         mut,
         seeds = [b"token_lottery".as_ref()],
-        bump,
+        bump = token_lottery.bump,
     )]
     pub token_lottery: Account<'info, TokenLottery>,
 
@@ -434,7 +434,7 @@ pub struct BuyTicket<'info> {
     #[account(
         mut,
         seeds = [b"token_lottery".as_ref()],
-        bump
+        bump = token_lottery.bump
     )]
     pub token_lottery: Account<'info, TokenLottery>,
 
